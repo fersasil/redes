@@ -1,5 +1,6 @@
-#include "stdio.h"
-#include "stdlib.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ROUTER_FILE_CONFIG_NAME "roteador.config"
@@ -25,19 +26,120 @@ Link **read_link_config(int *link_list_size);
 Link *parse_line_to_link(char *line);
 Router *parse_line_to_router(char *line);
 
+void *listen_to_messages_thread(void *data);
+void *send_messages_thread(void *data);
+void *menu_interface_thread(void *data);
+
+pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
+pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
+
 int main()
 {
   int router_list_size, link_list_size;
   Router **router_list = read_router_config(&router_list_size);
   Link **link_list = read_link_config(&link_list_size);
 
-  for (int i = 0; i < router_list_size; i++)
-    printf("id: %i port: %i address: %s \n", router_list[i]->id, router_list[i]->port, router_list[i]->ip_address);
+  // for (int i = 0; i < router_list_size; i++)
+  //   printf("id: %i port: %i address: %s \n", router_list[i]->id, router_list[i]->port, router_list[i]->ip_address);
 
-  for (int i = 0; i < link_list_size; i++)
-    printf("first: %i destination: %i weight: %i \n", link_list[i]->node_start, link_list[i]->node_destination, link_list[i]->weight);
+  // for (int i = 0; i < link_list_size; i++)
+  //   printf("first: %i destination: %i weight: %i \n", link_list[i]->node_start, link_list[i]->node_destination, link_list[i]->weight);
+
+  pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, NULL);
+  pthread_create(&Thread_send_messages, NULL, send_messages_thread, NULL);
+  pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
+
+  //now join them
+  pthread_join(Thread_listen_to_messages, NULL);
+  // printf("Thread id %ld returned\n", Thread_listen_to_messages);
+
+  // I think this thread should be created only when the user wants to send a new message
+  // pthread_join(Thread_send_messages, NULL);
+  // printf("Thread id %ld returned\n", Thread_send_messages);
+
+  pthread_join(Thread_menu_interface, NULL);
+  printf("Thread id %ld returned\n", Thread_menu_interface);
 
   return 0;
+}
+
+void *menu_interface_thread(void *data)
+{
+  char option;
+
+  do
+  {
+    puts(
+        "TYPE:\n"
+        "0: KILL THIS PROCESS\n"
+        "1: SEND A NEW MESSAGE\n"
+        "1: READ UNREAD MESSAGES\n"
+        "2: READ ALL MESSAGES\n");
+    scanf("%c", &option);
+    getchar();
+  } while (option != '0');
+
+  pthread_exit(NULL);
+}
+
+void *listen_to_messages_thread(void *data)
+{
+  // unsigned long i, j;
+  // if (pthread_mutex_lock(&mutex1) == 0)
+  // {
+  //   printf("Thread ID%ld got mutex1.\n", pthread_self());
+  //   for (i = 0; i < 10000000; ++i)
+  //     ; // just for wasting some time
+  //   if (pthread_mutex_lock(&mutex2) == 0)
+  //   {
+  //     printf("Thread ID%ld got mutex2.\n", pthread_self());
+  //     for (i = 0; i < 10000000; ++i)
+  //       ; // just for wasting some time
+  //     pthread_mutex_unlock(&mutex2);
+  //   }
+  //   else
+  //   {
+  //     printf("\nThread ID%ld did not get mutex2.\n", pthread_self());
+  //     pthread_mutex_unlock(&mutex2);
+  //   }
+  //   pthread_mutex_unlock(&mutex1);
+  // }
+  // else
+  // {
+  //   printf("\nThread ID%ld did not get mutex1.\n", pthread_self());
+  //   pthread_mutex_unlock(&mutex1);
+  // }
+  pthread_exit(NULL);
+}
+
+void *send_messages_thread(void *data)
+{
+  // unsigned long i, j;
+  // if (pthread_mutex_lock(&mutex2) == 0)
+  // {
+  //   printf("Thread ID%ld got mutex2.\n", pthread_self());
+  //   for (i = 0; i < 10000000; ++i)
+  //     ; // just for wasting some time
+  //   if (pthread_mutex_lock(&mutex1) == 0)
+  //   {
+  //     printf("Thread ID%ld got mutex1.\n", pthread_self());
+  //     for (i = 0; i < 10000000; ++i)
+  //       ; // just for wasting some time
+  //     pthread_mutex_unlock(&mutex1);
+  //   }
+  //   else
+  //   {
+  //     printf("\nThread ID%ld did not get mutex1.\n", pthread_self());
+  //     pthread_mutex_unlock(&mutex1);
+  //   }
+  //   pthread_mutex_unlock(&mutex2);
+  // }
+  // else
+  // {
+  //   printf("\nThread ID%ld did not get mutex2.\n", pthread_self());
+  //   pthread_mutex_unlock(&mutex2);
+  // }
+  pthread_exit(NULL);
 }
 
 Router **read_router_config(int *router_list_size)
