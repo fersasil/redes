@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
 #define ROUTER_FILE_CONFIG_NAME "roteador.config"
 #define LINK_FILE_CONFIG_NAME "enlace.config"
@@ -19,6 +21,12 @@ struct
   int node_destination;
   int weight;
 } typedef Link;
+
+void die(char *s)
+{
+  perror(s);
+  exit(1);
+}
 
 char *read_file(char *filename);
 Router **read_router_config(int *router_list_size);
@@ -39,18 +47,14 @@ int main()
   Router **router_list = read_router_config(&router_list_size);
   Link **link_list = read_link_config(&link_list_size);
 
-  // for (int i = 0; i < router_list_size; i++)
-  //   printf("id: %i port: %i address: %s \n", router_list[i]->id, router_list[i]->port, router_list[i]->ip_address);
+  // printf("%u", htonl(INADDR_ANY));
 
-  // for (int i = 0; i < link_list_size; i++)
-  //   printf("first: %i destination: %i weight: %i \n", link_list[i]->node_start, link_list[i]->node_destination, link_list[i]->weight);
-
-  pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, NULL);
-  pthread_create(&Thread_send_messages, NULL, send_messages_thread, NULL);
+  // pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, NULL);
+  // pthread_create(&Thread_send_messages, NULL, send_messages_thread, NULL);
   pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
 
   //now join them
-  pthread_join(Thread_listen_to_messages, NULL);
+  // pthread_join(Thread_listen_to_messages, NULL);
   // printf("Thread id %ld returned\n", Thread_listen_to_messages);
 
   // I think this thread should be created only when the user wants to send a new message
@@ -84,61 +88,120 @@ void *menu_interface_thread(void *data)
 
 void *listen_to_messages_thread(void *data)
 {
-  // unsigned long i, j;
-  // if (pthread_mutex_lock(&mutex1) == 0)
-  // {
-  //   printf("Thread ID%ld got mutex1.\n", pthread_self());
-  //   for (i = 0; i < 10000000; ++i)
-  //     ; // just for wasting some time
-  //   if (pthread_mutex_lock(&mutex2) == 0)
-  //   {
-  //     printf("Thread ID%ld got mutex2.\n", pthread_self());
-  //     for (i = 0; i < 10000000; ++i)
-  //       ; // just for wasting some time
-  //     pthread_mutex_unlock(&mutex2);
-  //   }
-  //   else
-  //   {
-  //     printf("\nThread ID%ld did not get mutex2.\n", pthread_self());
-  //     pthread_mutex_unlock(&mutex2);
-  //   }
-  //   pthread_mutex_unlock(&mutex1);
-  // }
-  // else
-  // {
-  //   printf("\nThread ID%ld did not get mutex1.\n", pthread_self());
-  //   pthread_mutex_unlock(&mutex1);
-  // }
+  int id;
+  id = *((int *)data);
+  free((int *)data);
+
+#define BUFLEN 512 //Max length of buffer
+#define PORT 8888  //The port on which to listen for incoming data
+
+  struct sockaddr_in si_me, si_other;
+
+  int s, i, slen = sizeof(si_other), recv_len;
+  char buf[BUFLEN];
+
+  //create a UDP socket
+  if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+  {
+    die("socket");
+  }
+
+  // zero out the structure
+  memset((char *)&si_me, 0, sizeof(si_me));
+
+  si_me.sin_family = AF_INET;
+  si_me.sin_port = htons(PORT);
+  si_me.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  //bind socket to port
+  if (bind(s, (struct sockaddr *)&si_me, sizeof(si_me)) == -1)
+  {
+    die("bind");
+  }
+
+  //keep listening for data
+  while (1)
+  {
+    printf("Waiting for data...");
+    fflush(stdout);
+    //receive a reply and print it
+    //clear the buffer by filling null, it might have previously received data
+    memset(buf, '\0', BUFLEN);
+
+    //try to receive some data, this is a blocking call
+    if ((recv_len = recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *)&si_other, &slen)) == -1)
+    {
+      die("recvfrom()");
+    }
+
+    //print details of the client/peer and the data received
+    printf("Received packet from %s:%d\n", inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
+    printf("Data: %s\n", buf);
+
+    //now reply the client with the same data
+    if (sendto(s, buf, recv_len, 0, (struct sockaddr *)&si_other, slen) == -1)
+    {
+      die("sendto()");
+    }
+  }
+
+  close(s);
   pthread_exit(NULL);
 }
 
 void *send_messages_thread(void *data)
 {
-  // unsigned long i, j;
-  // if (pthread_mutex_lock(&mutex2) == 0)
-  // {
-  //   printf("Thread ID%ld got mutex2.\n", pthread_self());
-  //   for (i = 0; i < 10000000; ++i)
-  //     ; // just for wasting some time
-  //   if (pthread_mutex_lock(&mutex1) == 0)
-  //   {
-  //     printf("Thread ID%ld got mutex1.\n", pthread_self());
-  //     for (i = 0; i < 10000000; ++i)
-  //       ; // just for wasting some time
-  //     pthread_mutex_unlock(&mutex1);
-  //   }
-  //   else
-  //   {
-  //     printf("\nThread ID%ld did not get mutex1.\n", pthread_self());
-  //     pthread_mutex_unlock(&mutex1);
-  //   }
-  //   pthread_mutex_unlock(&mutex2);
-  // }
-  // else
-  // {
-  //   printf("\nThread ID%ld did not get mutex2.\n", pthread_self());
-  //   pthread_mutex_unlock(&mutex2);
-  // }
+
+#define SERVER "127.0.0.1"
+#define BUFLEN 512 //Max length of buffer
+#define PORT 8888  //The port on which to send data
+
+  struct sockaddr_in si_other;
+  int s, i, slen = sizeof(si_other);
+  char buf[BUFLEN];
+  char message[BUFLEN];
+
+  if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+  {
+    die("socket");
+  }
+
+  memset((char *)&si_other, 0, sizeof(si_other));
+  si_other.sin_family = AF_INET;
+  si_other.sin_port = htons(PORT);
+
+  if (inet_aton(SERVER, &si_other.sin_addr) == 0)
+  {
+    fprintf(stderr, "inet_aton() failed\n");
+    exit(1);
+  }
+
+  while (1)
+  {
+    printf("Enter message : ");
+    //gets(message);
+    scanf("%s", message);
+
+    //send the message
+    if (sendto(s, message, strlen(message), 0, (struct sockaddr *)&si_other, slen) == -1)
+    {
+      die("sendto()");
+    }
+
+    //receive a reply and print it
+    //clear the buffer by filling null, it might have previously received data
+    memset(buf, '\0', BUFLEN);
+    //try to receive some data, this is a blocking call
+    if (recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *)&si_other, &slen) == -1)
+    {
+      die("recvfrom()");
+    }
+
+    puts(buf);
+  }
+
+  close(s);
+  return 0;
   pthread_exit(NULL);
 }
 
