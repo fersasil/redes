@@ -4,6 +4,8 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <unistd.h>
+
 
 #define ROUTER_FILE_CONFIG_NAME "roteador.config"
 #define LINK_FILE_CONFIG_NAME "enlace.config"
@@ -41,18 +43,21 @@ void *listen_to_messages_thread(void *data);
 void *send_messages_thread(void *data);
 void *menu_interface_thread(void *data);
 
-void clean_buffer(char *buffer);
+void clear_buffer(char *buffer);
 int create_udp_socket();
-int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router* router_config, int socket_created_info);
+int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router *router_config, int socket_created_info);
+int get_message_from_socket(int *socket_created, char *buffer_to_receive_messages, struct sockaddr_in *socket_client, socklen_t *socket_length);
+void print_data_received_from_client(struct sockaddr_in *socket_client, char *buffer_message);
+int send_response_to_client(int *socket_created, char *buffer_to_receive_messages, int *client_message_length, struct sockaddr_in *socket_client, socklen_t *socket_length);
 
 pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
 pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
 
 int main()
 {
-  int router_list_size, link_list_size;
+  int router_list_size; //, link_list_size;
   Router **router_list = read_router_config(&router_list_size);
-  Link **link_list = read_link_config(&link_list_size);
+  // Link **link_list = read_link_config(&link_list_size);
 
   pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)router_list[0]);
   // pthread_create(&Thread_send_messages, NULL, send_messages_thread, NULL);
@@ -100,10 +105,10 @@ void *listen_to_messages_thread(void *data)
   //Is it really necessary?
   free((int *)data);
 
-  struct sockaddr_in socket_address, socket_client;
-  int socket_created, i, socket_length, client_message_length;
-  int bind_success, send_response_message_success;
+  int socket_created, client_message_length;
   char buffer_to_receive_messages[BUFFER_LENGTH];
+  struct sockaddr_in socket_address, socket_client;
+  socklen_t socket_length;
 
   socket_length = sizeof(socket_client);
 
@@ -117,41 +122,25 @@ void *listen_to_messages_thread(void *data)
   {
     printf("Waiting for data...");
 
-    clean_buffer(buffer_to_receive_messages);
+    clear_buffer(buffer_to_receive_messages);
 
     // TODO: implement a mutex here!
     // TODO: this flag can have a name more meaningful
-    //try to receive some data, this is a blocking call
-    client_message_length = recvfrom(
-        socket_created,
+
+    client_message_length = get_message_from_socket(
+        &socket_created,
         buffer_to_receive_messages,
-        BUFFER_LENGTH,
-        0,
-        (struct sockaddr *)&socket_client,
+        &socket_client,
         &socket_length);
 
-    if (client_message_length == -1)
-    {
-      die("recvfrom()");
-    }
+    print_data_received_from_client(&socket_client, buffer_to_receive_messages);
 
-    //print details of the client/peer and the data received
-    printf("Received packet from %s:%d\n", inet_ntoa(socket_client.sin_addr), ntohs(socket_client.sin_port));
-    printf("Data: %s\n", buffer_to_receive_messages);
-
-    //now reply the client with the same data
-    send_response_message_success = sendto(
-        socket_created,
+    send_response_to_client(
+        &socket_created,
         buffer_to_receive_messages,
-        client_message_length,
-        0,
-        (struct sockaddr *)&socket_client,
-        socket_length);
-
-    if (send_response_message_success == -1)
-    {
-      die("sendto()");
-    }
+        &client_message_length,
+        &socket_client,
+        &socket_length);
   }
 
   close(socket_created);
@@ -161,56 +150,56 @@ void *listen_to_messages_thread(void *data)
 void *send_messages_thread(void *data)
 {
 
-#define SERVER "127.0.0.1"
-#define BUFLEN 512 //Max length of buffer
-#define PORT 8888  //The port on which to send data
+// #define SERVER "127.0.0.1"
+// #define BUFLEN 512 //Max length of buffer
+// #define PORT 8888  //The port on which to send data
 
-  struct sockaddr_in si_other;
-  int s, i, slen = sizeof(si_other);
-  char buf[BUFLEN];
-  char message[BUFLEN];
+//   struct sockaddr_in si_other;
+//   int s, i, slen = sizeof(si_other);
+//   char buf[BUFLEN];
+//   char message[BUFLEN];
 
-  if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-  {
-    die("socket");
-  }
+//   if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
+//   {
+//     die("socket");
+//   }
 
-  memset((char *)&si_other, 0, sizeof(si_other));
-  si_other.sin_family = AF_INET;
-  si_other.sin_port = htons(PORT);
+//   memset((char *)&si_other, 0, sizeof(si_other));
+//   si_other.sin_family = AF_INET;
+//   si_other.sin_port = htons(PORT);
 
-  if (inet_aton(SERVER, &si_other.sin_addr) == 0)
-  {
-    fprintf(stderr, "inet_aton() failed\n");
-    exit(1);
-  }
+//   if (inet_aton(SERVER, &si_other.sin_addr) == 0)
+//   {
+//     fprintf(stderr, "inet_aton() failed\n");
+//     exit(1);
+//   }
 
-  while (1)
-  {
-    printf("Enter message : ");
-    //gets(message);
-    scanf("%s", message);
+//   while (1)
+//   {
+//     printf("Enter message : ");
+//     //gets(message);
+//     scanf("%s", message);
 
-    //send the message
-    if (sendto(s, message, strlen(message), 0, (struct sockaddr *)&si_other, slen) == -1)
-    {
-      die("sendto()");
-    }
+//     //send the message
+//     if (sendto(s, message, strlen(message), 0, (struct sockaddr *)&si_other, slen) == -1)
+//     {
+//       die("sendto()");
+//     }
 
-    //receive a reply and print it
-    //clear the buffer by filling null, it might have previously received data
-    memset(buf, '\0', BUFLEN);
-    //try to receive some data, this is a blocking call
-    if (recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *)&si_other, &slen) == -1)
-    {
-      die("recvfrom()");
-    }
+//     //receive a reply and print it
+//     //clear the buffer by filling null, it might have previously received data
+//     memset(buf, '\0', BUFLEN);
+//     //try to receive some data, this is a blocking call
+//     if (recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *)&si_other, &slen) == -1)
+//     {
+//       die("recvfrom()");
+//     }
 
-    puts(buf);
-  }
+//     puts(buf);
+//   }
 
-  close(s);
-  return 0;
+//   pclose(s);
+//   return 0;
   pthread_exit(NULL);
 }
 
@@ -426,7 +415,7 @@ char *read_file(char *filename)
   return buffer;
 }
 
-void clean_buffer(char *buffer)
+void clear_buffer(char *buffer)
 {
   fflush(stdout);
   //receive a reply and print it
@@ -446,7 +435,7 @@ int create_udp_socket()
   return socket_created;
 }
 
-int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router* router_config, int socket_created_info)
+int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router *router_config, int socket_created_info)
 {
   // zero out the structure
   memset((char *)socket_address_pointer, 0, sizeof(*socket_address_pointer));
@@ -471,3 +460,52 @@ int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router* r
 
   return bind_success;
 }
+
+int get_message_from_socket(int *socket_created, char *buffer_to_receive_messages, struct sockaddr_in *socket_client, socklen_t *socket_length)
+{
+  int client_message_length;
+
+  client_message_length = recvfrom(
+      *socket_created,
+      buffer_to_receive_messages,
+      BUFFER_LENGTH,
+      0,
+      (struct sockaddr *)socket_client,
+      socket_length);
+
+  if (client_message_length == -1)
+  {
+    die("recvfrom()");
+  }
+
+  return client_message_length;
+}
+
+void print_data_received_from_client(struct sockaddr_in *socket_client, char *buffer_message)
+{
+  printf("Received packet from %s:%d\n", inet_ntoa(socket_client->sin_addr), ntohs(socket_client->sin_port));
+  //print details of the client/peer and the data received
+  printf("Data: %s\n", buffer_message);
+}
+
+int send_response_to_client(int *socket_created, char *buffer_to_receive_messages, int *client_message_length, struct sockaddr_in *socket_client, socklen_t *socket_length)
+{
+  //now reply the client with the same data
+  int send_response_message_success;
+
+  send_response_message_success = sendto(
+      *socket_created,
+      buffer_to_receive_messages,
+      *client_message_length,
+      0,
+      (struct sockaddr *)socket_client,
+      *socket_length);
+
+  if (send_response_message_success == -1)
+  {
+    die("sendto()");
+  }
+
+  return send_response_message_success;
+}
+
