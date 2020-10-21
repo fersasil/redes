@@ -6,18 +6,24 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-
 #define ROUTER_FILE_CONFIG_NAME "roteador.config"
 #define LINK_FILE_CONFIG_NAME "enlace.config"
 #define BUFFER_LENGTH 100 //Max length of buffer
 #define TRUE 1
 #define FALSE 0
 
+#define KILL_THIS_PROCESS '0'
+#define SEND_A_NEW_MESSAGE '1'
+#define READ_UNREAD_MESSAGES '2'
+#define READ_ALL_MESSAGES '3'
+
 struct
 {
   int id;
   int port;
   char *ip_address;
+  struct sockaddr_in socket;
+  int socket_number;
 } typedef Router;
 
 struct
@@ -45,35 +51,94 @@ void *menu_interface_thread(void *data);
 
 void clear_buffer(char *buffer);
 int create_udp_socket();
-int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router *router_config, int socket_created_info);
+int set_udp_configurations(Router *router_config);
 int get_message_from_socket(int *socket_created, char *buffer_to_receive_messages, struct sockaddr_in *socket_client, socklen_t *socket_length);
 void print_data_received_from_client(struct sockaddr_in *socket_client, char *buffer_message);
 int send_response_to_client(int *socket_created, char *buffer_to_receive_messages, int *client_message_length, struct sockaddr_in *socket_client, socklen_t *socket_length);
+void wait_and_lock_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
+void lock_and_wake_next_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 
 pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
 pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
+pthread_cond_t send_messages_cond, menu_cond;
+// pthread_mutex_t lock;
 
-int main()
+void parse_args(int argc, char const *argv[], char **ip, int *port)
 {
-  int router_list_size; //, link_list_size;
-  Router **router_list = read_router_config(&router_list_size);
+  if (argc < 2)
+    return;
+
+  if (argc % 2 == 0)
+  {
+    printf("Incorrect arguments\n");
+    exit(1);
+  }
+
+  for (int i = 1; i < argc; i += 2)
+  {
+    if (strcmp(argv[i], "-p") == 0)
+    {
+      char *aux = (char *)malloc(strlen(argv[i + 1]) + 1);
+      *port = atoi(argv[i + 1]);
+    }
+    else if (strcmp(argv[i], "--port") == 0)
+    {
+      *port = atoi(argv[i + 1]);
+    }
+    if (strcmp(argv[i], "-a") == 0)
+    {
+      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
+      strcpy(*ip, argv[i + 1]);
+    }
+    else if (strcmp(argv[i], "--address") == 0)
+    {
+      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
+      strcpy(*ip, argv[i + 1]);
+    }
+  }
+}
+
+Router create_main_router(int argc, char const *argv[]){
+  char *ip;
+  int port;
+
+  parse_args(argc, argv, &ip, &port);
+
+  Router router_config;
+  int socket_created; 
+  
+  socket_created = create_udp_socket();
+
+  router_config.id = -1;
+  router_config.ip_address = "127.0.0.1"; //ip;
+  router_config.port = port;
+  router_config.socket_number = socket_created;
+
+  set_udp_configurations(&router_config);
+
+  free(ip);
+
+  return router_config;
+}
+
+int main(int argc, char const *argv[])
+{
+
+  Router router_config;
+
+  router_config = create_main_router(argc, argv);
+
+  // int router_list_size; //, link_list_size;
+  // Router **router_list = read_router_config(&router_list_size);
   // Link **link_list = read_link_config(&link_list_size);
 
-  pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)router_list[0]);
-  // pthread_create(&Thread_send_messages, NULL, send_messages_thread, NULL);
+  pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)&router_config);
+  pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
   pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
 
-  //now join them
   pthread_join(Thread_listen_to_messages, NULL);
-
-  // printf("Thread id %ld returned\n", Thread_listen_to_messages);
-
-  // I think this thread should be created only when the user wants to send a new message
-  // pthread_join(Thread_send_messages, NULL);
-  // printf("Thread id %ld returned\n", Thread_send_messages);
-
+  pthread_join(Thread_send_messages, NULL);
   pthread_join(Thread_menu_interface, NULL);
-  printf("Thread id %ld returned\n", Thread_menu_interface);
 
   return 0;
 }
@@ -88,11 +153,31 @@ void *menu_interface_thread(void *data)
         "TYPE:\n"
         "0: KILL THIS PROCESS\n"
         "1: SEND A NEW MESSAGE\n"
-        "1: READ UNREAD MESSAGES\n"
-        "2: READ ALL MESSAGES\n");
+        "2: READ UNREAD MESSAGES\n"
+        "3: READ ALL MESSAGES\n");
+
     scanf("%c", &option);
+
     getchar();
+
+    switch (option)
+    {
+    case SEND_A_NEW_MESSAGE:
+      // Wakes the send message thread
+      lock_and_wake_next_thread(&mutex2, &send_messages_cond);
+      // make this thread wait
+      wait_and_lock_thread(&mutex2, &menu_cond);
+      //clean buffer
+      getchar();
+      break;
+
+    default:
+      break;
+    }
+
   } while (option != '0');
+
+  // TODO: kill all process!
 
   pthread_exit(NULL);
 }
@@ -102,22 +187,13 @@ void *listen_to_messages_thread(void *data)
   Router router_config;
   router_config = *((Router *)data);
 
-  //Is it really necessary?
-  free((int *)data);
-
-  int socket_created, client_message_length;
+  int client_message_length;
   char buffer_to_receive_messages[BUFFER_LENGTH];
-  struct sockaddr_in socket_address, socket_client;
+  struct sockaddr_in socket_address;
   socklen_t socket_length;
 
-  socket_length = sizeof(socket_client);
+  socket_length = sizeof(router_config.socket);
 
-  //create a UDP socket
-  socket_created = create_udp_socket();
-
-  set_udp_configurations(&socket_address, &router_config, socket_created);
-
-  //keep listening for data
   while (TRUE)
   {
     printf("Waiting for data...");
@@ -125,82 +201,112 @@ void *listen_to_messages_thread(void *data)
     clear_buffer(buffer_to_receive_messages);
 
     // TODO: implement a mutex here!
-    // TODO: this flag can have a name more meaningful
 
     client_message_length = get_message_from_socket(
-        &socket_created,
+        &router_config.socket_number,
         buffer_to_receive_messages,
-        &socket_client,
+        &router_config.socket,
         &socket_length);
 
-    print_data_received_from_client(&socket_client, buffer_to_receive_messages);
+    print_data_received_from_client(&router_config.socket, buffer_to_receive_messages);
 
     send_response_to_client(
-        &socket_created,
+        &router_config.socket_number,
         buffer_to_receive_messages,
         &client_message_length,
-        &socket_client,
+        &router_config.socket,
         &socket_length);
   }
 
-  close(socket_created);
   pthread_exit(NULL);
 }
 
 void *send_messages_thread(void *data)
 {
+  Router router_config;
+  router_config = *((Router *)data);
 
-// #define SERVER "127.0.0.1"
-// #define BUFLEN 512 //Max length of buffer
-// #define PORT 8888  //The port on which to send data
+  struct sockaddr_in socket_to_send_message;
+  int socket_to_send_message_length, message_success;
+  int port_to_send_message;
+  char buffer_to_receive_message[BUFFER_LENGTH];
+  char message[BUFFER_LENGTH];
 
-//   struct sockaddr_in si_other;
-//   int s, i, slen = sizeof(si_other);
-//   char buf[BUFLEN];
-//   char message[BUFLEN];
+  socket_to_send_message_length = sizeof(socket_to_send_message);
 
-//   if ((s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1)
-//   {
-//     die("socket");
-//   }
+  memset((char *)&socket_to_send_message, 0, sizeof(socket_to_send_message));
 
-//   memset((char *)&si_other, 0, sizeof(si_other));
-//   si_other.sin_family = AF_INET;
-//   si_other.sin_port = htons(PORT);
+  socket_to_send_message.sin_family = AF_INET;
 
-//   if (inet_aton(SERVER, &si_other.sin_addr) == 0)
-//   {
-//     fprintf(stderr, "inet_aton() failed\n");
-//     exit(1);
-//   }
+  if (inet_aton(router_config.ip_address, &socket_to_send_message.sin_addr) == 0)
+  {
+    fprintf(stderr, "inet_aton() failed\n");
+    exit(1);
+  }
 
-//   while (1)
-//   {
-//     printf("Enter message : ");
-//     //gets(message);
-//     scanf("%s", message);
 
-//     //send the message
-//     if (sendto(s, message, strlen(message), 0, (struct sockaddr *)&si_other, slen) == -1)
-//     {
-//       die("sendto()");
-//     }
+  while (1)
+  {
+    wait_and_lock_thread(&mutex1, &send_messages_cond);
 
-//     //receive a reply and print it
-//     //clear the buffer by filling null, it might have previously received data
-//     memset(buf, '\0', BUFLEN);
-//     //try to receive some data, this is a blocking call
-//     if (recvfrom(s, buf, BUFLEN, 0, (struct sockaddr *)&si_other, &slen) == -1)
-//     {
-//       die("recvfrom()");
-//     }
+    puts("Enter a port");
+    scanf("%i", &port_to_send_message);
+    socket_to_send_message.sin_port = htons(port_to_send_message);
 
-//     puts(buf);
-//   }
+    printf("Enter a message : ");
 
-//   pclose(s);
-//   return 0;
+    scanf("%s", message);
+
+    message_success = sendto(
+        router_config.socket_number,
+        message,
+        strlen(message),
+        0,
+        (struct sockaddr *)&socket_to_send_message,
+        socket_to_send_message_length);
+
+    //send the message
+    if (message_success == -1)
+    {
+      die("sendto()");
+    }
+
+    //receive a reply and print it
+    //clear the buffer by filling null, it might have previously received data
+    memset(buffer_to_receive_message, '\0', BUFFER_LENGTH);
+    //try to receive some data, this is a blocking call
+
+    message_success = recvfrom(
+        router_config.socket_number,
+        buffer_to_receive_message,
+        BUFFER_LENGTH,
+        0,
+        (struct sockaddr *)&socket_to_send_message,
+        &socket_to_send_message_length);
+
+    if (message_success == -1)
+    {
+      die("recvfrom()");
+    }
+
+    puts(buffer_to_receive_message);
+
+    lock_and_wake_next_thread(&mutex1, &menu_cond);
+  }
+
   pthread_exit(NULL);
+}
+
+void wait_and_lock_thread(pthread_mutex_t *mutex, pthread_cond_t *condition)
+{
+  pthread_mutex_lock(mutex);
+  pthread_cond_wait(condition, mutex);
+}
+
+void lock_and_wake_next_thread(pthread_mutex_t *mutex, pthread_cond_t *condition)
+{
+  pthread_mutex_unlock(mutex);
+  pthread_cond_signal(condition);
 }
 
 Router **read_router_config(int *router_list_size)
@@ -219,8 +325,7 @@ Router **read_router_config(int *router_list_size)
 
     router_aux = parse_line_to_router(token);
     router_list[*router_list_size] = router_aux;
-    router_list = realloc(router_list, ++(*router_list_size) * sizeof(**router_list));
-    ;
+    router_list = realloc(router_list, ++(*router_list_size) * sizeof(**router_list)); 
   }
 
   return router_list;
@@ -339,7 +444,7 @@ Router *parse_line_to_router(char *line)
   }
 
   //find the start index of ip and the last index of it. It ignores blank spaces too
-  for (ip_end_position = port_end_position + 1, first_letter_appear = 1;; ip_end_position++)
+  for (ip_end_position = port_end_position + 1, first_letter_appear = 1; TRUE; ip_end_position++)
   {
     if (line[ip_end_position] != ' ' && first_letter_appear)
     {
@@ -418,8 +523,6 @@ char *read_file(char *filename)
 void clear_buffer(char *buffer)
 {
   fflush(stdout);
-  //receive a reply and print it
-  //clear the buffer by filling null, it might have previously received data
   memset(buffer, '\0', BUFFER_LENGTH);
 };
 
@@ -435,23 +538,23 @@ int create_udp_socket()
   return socket_created;
 }
 
-int set_udp_configurations(struct sockaddr_in *socket_address_pointer, Router *router_config, int socket_created_info)
+int set_udp_configurations(Router *router_config)
 {
   // zero out the structure
-  memset((char *)socket_address_pointer, 0, sizeof(*socket_address_pointer));
+  memset((char *)&router_config->socket, 0, sizeof(router_config->socket));
 
   // UDP
-  socket_address_pointer->sin_family = AF_INET;
+  router_config->socket.sin_family = AF_INET;
   // Set the port
-  socket_address_pointer->sin_port = htons(router_config->port);
+  router_config->socket.sin_port = htons(router_config->port);
   // Set the IP ADDRESS
-  socket_address_pointer->sin_addr.s_addr = htonl(INADDR_ANY);
+  router_config->socket.sin_addr.s_addr = htonl(INADDR_ANY);
 
   // TODO: before send a message verify if its a big endian or little endian and send it
   // bind socket to port
   // it could be a pointer... set it to free after usage...
 
-  int bind_success = bind(socket_created_info, (struct sockaddr *)socket_address_pointer, sizeof(*socket_address_pointer));
+  int bind_success = bind(router_config->socket_number, (struct sockaddr *)&router_config->socket, sizeof(router_config->socket));
 
   if (bind_success == -1)
   {
@@ -508,4 +611,3 @@ int send_response_to_client(int *socket_created, char *buffer_to_receive_message
 
   return send_response_message_success;
 }
-

@@ -1,0 +1,1 @@
+gcc router.c -lpthread  -o router && ./router -p 25001
