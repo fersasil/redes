@@ -33,6 +33,13 @@ struct
   int weight;
 } typedef Link;
 
+struct
+{
+  char *message;
+  char *address_client;
+  int port_client;
+} typedef Router_messages;
+
 void die(char *s)
 {
   perror(s);
@@ -58,67 +65,67 @@ int send_response_to_client(int *socket_created, char *buffer_to_receive_message
 void wait_and_lock_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 void lock_and_wake_next_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 
+Router create_main_router(int argc, char const *argv[]);
+void parse_args(int argc, char const *argv[], char **ip, int *port);
+int end_all_threads = FALSE;
+
 pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
 pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
 pthread_cond_t send_messages_cond, menu_cond;
-// pthread_mutex_t lock;
 
-void parse_args(int argc, char const *argv[], char **ip, int *port)
+Router_messages **router_messages = NULL;
+int router_messages_size;
+
+void save_message(struct sockaddr_in *socket_client, char *buffer_string)
 {
-  if (argc < 2)
-    return;
-
-  if (argc % 2 == 0)
+  if (router_messages == NULL)
   {
-    printf("Incorrect arguments\n");
-    exit(1);
+    router_messages = (Router_messages **)malloc(sizeof(Router_messages **));
+    router_messages_size = 0;
   }
 
-  for (int i = 1; i < argc; i += 2)
-  {
-    if (strcmp(argv[i], "-p") == 0)
-    {
-      char *aux = (char *)malloc(strlen(argv[i + 1]) + 1);
-      *port = atoi(argv[i + 1]);
-    }
-    else if (strcmp(argv[i], "--port") == 0)
-    {
-      *port = atoi(argv[i + 1]);
-    }
-    if (strcmp(argv[i], "-a") == 0)
-    {
-      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
-      strcpy(*ip, argv[i + 1]);
-    }
-    else if (strcmp(argv[i], "--address") == 0)
-    {
-      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
-      strcpy(*ip, argv[i + 1]);
-    }
-  }
+  router_messages_size++;
+
+  router_messages = realloc(router_messages, (router_messages_size) * sizeof(**router_messages));
+
+  router_messages[router_messages_size - 1] = (Router_messages *)malloc(sizeof(Router_messages *));
+
+  char *aux;
+
+  aux = (char *)malloc(strlen(buffer_string) + 1);
+  strcpy(aux, buffer_string);
+
+  router_messages[router_messages_size - 1]->message = aux;
+
+  aux = (char *)malloc(strlen(inet_ntoa(socket_client->sin_addr)) + 1);
+  strcpy(aux, inet_ntoa(socket_client->sin_addr));
+
+  router_messages[router_messages_size - 1]->address_client = aux;
+
+  router_messages[router_messages_size - 1]->port_client = ntohs(socket_client->sin_port);
 }
 
-Router create_main_router(int argc, char const *argv[]){
-  char *ip;
-  int port;
+void print_all_messages()
+{
+  puts("------------------\n");
 
-  parse_args(argc, argv, &ip, &port);
+  if (router_messages == NULL)
+  {
+    printf("THERE'S NO MESSAGES\n");
+    puts("------------------\n");
+  }
 
-  Router router_config;
-  int socket_created; 
-  
-  socket_created = create_udp_socket();
+  int i = 0;
+  Router_messages *router;
 
-  router_config.id = -1;
-  router_config.ip_address = "127.0.0.1"; //ip;
-  router_config.port = port;
-  router_config.socket_number = socket_created;
+  for (i = 0; i < router_messages_size; i++)
+  {
+    router = router_messages[i];
+    printf("Cliente: %s:%i\n", router->address_client, router->port_client);
+    printf("Message: %s\n", router->message);
+  }
 
-  set_udp_configurations(&router_config);
-
-  free(ip);
-
-  return router_config;
+  puts("------------------\n");
 }
 
 int main(int argc, char const *argv[])
@@ -136,9 +143,11 @@ int main(int argc, char const *argv[])
   pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
   pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
 
+  // pthread_join(Thread_send_messages, NULL);
   pthread_join(Thread_listen_to_messages, NULL);
-  pthread_join(Thread_send_messages, NULL);
   pthread_join(Thread_menu_interface, NULL);
+
+  printf("Thread id %ld returned\n", Thread_menu_interface);
 
   return 0;
 }
@@ -157,8 +166,11 @@ void *menu_interface_thread(void *data)
         "3: READ ALL MESSAGES\n");
 
     scanf("%c", &option);
-
     getchar();
+
+    // if(option == '0') {
+    //   break;
+    // }
 
     switch (option)
     {
@@ -171,13 +183,19 @@ void *menu_interface_thread(void *data)
       getchar();
       break;
 
+    case READ_ALL_MESSAGES:
+      print_all_messages();
+      break;
+    case KILL_THIS_PROCESS:
+      break;
     default:
+      printf("Invalid \n");
       break;
     }
-
   } while (option != '0');
 
-  // TODO: kill all process!
+  // TODO: this should be handled in a better way
+  exit(0);
 
   pthread_exit(NULL);
 }
@@ -189,14 +207,13 @@ void *listen_to_messages_thread(void *data)
 
   int client_message_length;
   char buffer_to_receive_messages[BUFFER_LENGTH];
-  struct sockaddr_in socket_address;
   socklen_t socket_length;
 
   socket_length = sizeof(router_config.socket);
 
   while (TRUE)
   {
-    printf("Waiting for data...");
+    // printf("Waiting for data...");
 
     clear_buffer(buffer_to_receive_messages);
 
@@ -210,12 +227,15 @@ void *listen_to_messages_thread(void *data)
 
     print_data_received_from_client(&router_config.socket, buffer_to_receive_messages);
 
-    send_response_to_client(
-        &router_config.socket_number,
-        buffer_to_receive_messages,
-        &client_message_length,
-        &router_config.socket,
-        &socket_length);
+    // TODO: this should use mutex
+    save_message(&router_config.socket, buffer_to_receive_messages);
+
+    // send_response_to_client(
+    //     &router_config.socket_number,
+    //     buffer_to_receive_messages,
+    //     &client_message_length,
+    //     &router_config.socket,
+    //     &socket_length);
   }
 
   pthread_exit(NULL);
@@ -227,7 +247,8 @@ void *send_messages_thread(void *data)
   router_config = *((Router *)data);
 
   struct sockaddr_in socket_to_send_message;
-  int socket_to_send_message_length, message_success;
+  int message_success;
+  socklen_t socket_to_send_message_length;
   int port_to_send_message;
   char buffer_to_receive_message[BUFFER_LENGTH];
   char message[BUFFER_LENGTH];
@@ -244,8 +265,7 @@ void *send_messages_thread(void *data)
     exit(1);
   }
 
-
-  while (1)
+  while (TRUE)
   {
     wait_and_lock_thread(&mutex1, &send_messages_cond);
 
@@ -273,27 +293,28 @@ void *send_messages_thread(void *data)
 
     //receive a reply and print it
     //clear the buffer by filling null, it might have previously received data
-    memset(buffer_to_receive_message, '\0', BUFFER_LENGTH);
-    //try to receive some data, this is a blocking call
+    // memset(buffer_to_receive_message, '\0', BUFFER_LENGTH);
+    // //try to receive some data, this is a blocking call
 
-    message_success = recvfrom(
-        router_config.socket_number,
-        buffer_to_receive_message,
-        BUFFER_LENGTH,
-        0,
-        (struct sockaddr *)&socket_to_send_message,
-        &socket_to_send_message_length);
+    // message_success = recvfrom(
+    //     router_config.socket_number,
+    //     buffer_to_receive_message,
+    //     BUFFER_LENGTH,
+    //     0,
+    //     (struct sockaddr *)&socket_to_send_message,
+    //     &socket_to_send_message_length);
 
-    if (message_success == -1)
-    {
-      die("recvfrom()");
-    }
+    // if (message_success == -1)
+    // {
+    //   die("recvfrom()");
+    // }
 
-    puts(buffer_to_receive_message);
+    // puts(buffer_to_receive_message);
 
     lock_and_wake_next_thread(&mutex1, &menu_cond);
   }
 
+  printf("SEND MESSAGE\n");
   pthread_exit(NULL);
 }
 
@@ -325,7 +346,7 @@ Router **read_router_config(int *router_list_size)
 
     router_aux = parse_line_to_router(token);
     router_list[*router_list_size] = router_aux;
-    router_list = realloc(router_list, ++(*router_list_size) * sizeof(**router_list)); 
+    router_list = realloc(router_list, ++(*router_list_size) * sizeof(**router_list));
   }
 
   return router_list;
@@ -610,4 +631,62 @@ int send_response_to_client(int *socket_created, char *buffer_to_receive_message
   }
 
   return send_response_message_success;
+}
+
+void parse_args(int argc, char const *argv[], char **ip, int *port)
+{
+  if (argc < 2)
+    return;
+
+  if (argc % 2 == 0)
+  {
+    printf("Incorrect arguments\n");
+    exit(1);
+  }
+
+  for (int i = 1; i < argc; i += 2)
+  {
+    if (strcmp(argv[i], "-p") == 0)
+    {
+      *port = atoi(argv[i + 1]);
+    }
+    else if (strcmp(argv[i], "--port") == 0)
+    {
+      *port = atoi(argv[i + 1]);
+    }
+    if (strcmp(argv[i], "-a") == 0)
+    {
+      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
+      strcpy(*ip, argv[i + 1]);
+    }
+    else if (strcmp(argv[i], "--address") == 0)
+    {
+      *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
+      strcpy(*ip, argv[i + 1]);
+    }
+  }
+}
+
+Router create_main_router(int argc, char const *argv[])
+{
+  char *ip;
+  int port;
+
+  parse_args(argc, argv, &ip, &port);
+
+  Router router_config;
+  int socket_created;
+
+  socket_created = create_udp_socket();
+
+  router_config.id = -1;
+  router_config.ip_address = "127.0.0.1"; //ip;
+  router_config.port = port;
+  router_config.socket_number = socket_created;
+
+  set_udp_configurations(&router_config);
+
+  free(ip);
+
+  return router_config;
 }
