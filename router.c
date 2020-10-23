@@ -66,12 +66,16 @@ void wait_and_lock_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 void lock_and_wake_next_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 
 Router create_main_router(int argc, char const *argv[]);
-void parse_args(int argc, char const *argv[], char **ip, int *port);
+int parse_args(int argc, char const *argv[], char **ip, int *port);
 int end_all_threads = FALSE;
 
 pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
 pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
 pthread_cond_t send_messages_cond, menu_cond;
+
+Router **router_list;
+Link **link_list;
+int router_list_size, link_list_size;
 
 Router_messages **router_messages = NULL;
 int router_messages_size;
@@ -130,14 +134,12 @@ void print_all_messages()
 
 int main(int argc, char const *argv[])
 {
-
-  Router router_config;
-
-  router_config = create_main_router(argc, argv);
-
   // int router_list_size; //, link_list_size;
-  // Router **router_list = read_router_config(&router_list_size);
+  router_list = read_router_config(&router_list_size);
   // Link **link_list = read_link_config(&link_list_size);
+
+  Router router_config = create_main_router(argc, argv);
+
 
   pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)&router_config);
   pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
@@ -291,26 +293,6 @@ void *send_messages_thread(void *data)
       die("sendto()");
     }
 
-    //receive a reply and print it
-    //clear the buffer by filling null, it might have previously received data
-    // memset(buffer_to_receive_message, '\0', BUFFER_LENGTH);
-    // //try to receive some data, this is a blocking call
-
-    // message_success = recvfrom(
-    //     router_config.socket_number,
-    //     buffer_to_receive_message,
-    //     BUFFER_LENGTH,
-    //     0,
-    //     (struct sockaddr *)&socket_to_send_message,
-    //     &socket_to_send_message_length);
-
-    // if (message_success == -1)
-    // {
-    //   die("recvfrom()");
-    // }
-
-    // puts(buffer_to_receive_message);
-
     lock_and_wake_next_thread(&mutex1, &menu_cond);
   }
 
@@ -337,7 +319,6 @@ Router **read_router_config(int *router_list_size)
   text = read_file(ROUTER_FILE_CONFIG_NAME);
   char *token = strtok(text, "\n");
 
-  // this needs to return a list of pointers of routers!
   Router **router_list = (Router **)malloc(sizeof(Router **));
 
   for (*router_list_size = 0; token != NULL; token = strtok(NULL, "\n"))
@@ -359,7 +340,6 @@ Link **read_link_config(int *link_list_size)
   text = read_file(LINK_FILE_CONFIG_NAME);
   char *token = strtok(text, "\n");
 
-  // this needs to return a list of pointers of routers!
   Link **link_list = (Link **)malloc(sizeof(Link **));
 
   for (*link_list_size = 0; token != NULL; token = strtok(NULL, "\n"))
@@ -633,16 +613,22 @@ int send_response_to_client(int *socket_created, char *buffer_to_receive_message
   return send_response_message_success;
 }
 
-void parse_args(int argc, char const *argv[], char **ip, int *port)
+// Returns -1 if there's no id or the id.
+int parse_args(int argc, char const *argv[], char **ip, int *port)
 {
   if (argc < 2)
-    return;
+  {
+    printf("Missing arguments\n");
+    exit(1);
+  }
 
   if (argc % 2 == 0)
   {
     printf("Incorrect arguments\n");
     exit(1);
   }
+
+  int id = -1;
 
   for (int i = 1; i < argc; i += 2)
   {
@@ -664,29 +650,47 @@ void parse_args(int argc, char const *argv[], char **ip, int *port)
       *ip = (char *)malloc(strlen(argv[i + 1]) + 1);
       strcpy(*ip, argv[i + 1]);
     }
+
+    if (strcmp(argv[i], "--id") == 0)
+    {
+      id = atoi(argv[i + 1]);
+    }
   }
+
+  return id;
 }
 
 Router create_main_router(int argc, char const *argv[])
 {
-  char *ip;
+  char *ip = NULL;
   int port;
+  int id_in_router_list;
+  int router_position_in_list;
 
-  parse_args(argc, argv, &ip, &port);
+  id_in_router_list = parse_args(argc, argv, &ip, &port);
+
+  if (id_in_router_list != -1)
+  {
+    // Find the router in routers router_list
+    for (router_position_in_list = 0; router_position_in_list < router_list_size; router_position_in_list++)
+      if (router_list[router_position_in_list]->id == id_in_router_list)
+        break;
+  }
 
   Router router_config;
   int socket_created;
 
   socket_created = create_udp_socket();
 
-  router_config.id = -1;
-  router_config.ip_address = "127.0.0.1"; //ip;
-  router_config.port = port;
+  router_config.id = id_in_router_list != -1 ? id_in_router_list : -1;
+  router_config.ip_address = id_in_router_list != -1 ? router_list[router_position_in_list]->ip_address : "127.0.0.1"; //ip;
+  router_config.port = id_in_router_list != -1 ? router_list[router_position_in_list]->port : port;
   router_config.socket_number = socket_created;
 
   set_udp_configurations(&router_config);
 
-  free(ip);
+  if (ip != NULL)
+    free(ip);
 
   return router_config;
 }
