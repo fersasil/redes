@@ -64,12 +64,15 @@ void print_data_received_from_client(struct sockaddr_in *socket_client, char *bu
 int send_response_to_client(int *socket_created, char *buffer_to_receive_messages, int *client_message_length, struct sockaddr_in *socket_client, socklen_t *socket_length);
 void wait_and_lock_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
 void lock_and_wake_next_thread(pthread_mutex_t *mutex, pthread_cond_t *condition);
+void print_all_messages();
+void save_message(struct sockaddr_in *socket_client, char *buffer_string);
 
 Router create_main_router(int argc, char const *argv[]);
 int parse_args(int argc, char const *argv[], char **ip, int *port);
 int end_all_threads = FALSE;
 
-pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER, mutex2 = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t send_message_mutex = PTHREAD_MUTEX_INITIALIZER, menu_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t router_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
 pthread_cond_t send_messages_cond, menu_cond;
 
@@ -79,58 +82,6 @@ int router_list_size, link_list_size;
 
 Router_messages **router_messages = NULL;
 int router_messages_size;
-
-void save_message(struct sockaddr_in *socket_client, char *buffer_string)
-{
-  if (router_messages == NULL)
-  {
-    router_messages = (Router_messages **)malloc(sizeof(Router_messages **));
-    router_messages_size = 0;
-  }
-
-  router_messages_size++;
-
-  router_messages = realloc(router_messages, (router_messages_size) * sizeof(**router_messages));
-
-  router_messages[router_messages_size - 1] = (Router_messages *)malloc(sizeof(Router_messages *));
-
-  char *aux;
-
-  aux = (char *)malloc(strlen(buffer_string) + 1);
-  strcpy(aux, buffer_string);
-
-  router_messages[router_messages_size - 1]->message = aux;
-
-  aux = (char *)malloc(strlen(inet_ntoa(socket_client->sin_addr)) + 1);
-  strcpy(aux, inet_ntoa(socket_client->sin_addr));
-
-  router_messages[router_messages_size - 1]->address_client = aux;
-
-  router_messages[router_messages_size - 1]->port_client = ntohs(socket_client->sin_port);
-}
-
-void print_all_messages()
-{
-  puts("------------------\n");
-
-  if (router_messages == NULL)
-  {
-    printf("THERE'S NO MESSAGES\n");
-    puts("------------------\n");
-  }
-
-  int i = 0;
-  Router_messages *router;
-
-  for (i = 0; i < router_messages_size; i++)
-  {
-    router = router_messages[i];
-    printf("Cliente: %s:%i\n", router->address_client, router->port_client);
-    printf("Message: %s\n", router->message);
-  }
-
-  puts("------------------\n");
-}
 
 int main(int argc, char const *argv[])
 {
@@ -145,7 +96,7 @@ int main(int argc, char const *argv[])
   pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
   pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
 
-  // pthread_join(Thread_send_messages, NULL);
+  pthread_join(Thread_send_messages, NULL);
   pthread_join(Thread_listen_to_messages, NULL);
   pthread_join(Thread_menu_interface, NULL);
 
@@ -170,17 +121,13 @@ void *menu_interface_thread(void *data)
     scanf("%c", &option);
     getchar();
 
-    // if(option == '0') {
-    //   break;
-    // }
-
     switch (option)
     {
     case SEND_A_NEW_MESSAGE:
       // Wakes the send message thread
-      lock_and_wake_next_thread(&mutex2, &send_messages_cond);
+      lock_and_wake_next_thread(&menu_mutex, &send_messages_cond);
       // make this thread wait
-      wait_and_lock_thread(&mutex2, &menu_cond);
+      wait_and_lock_thread(&menu_mutex, &menu_cond);
       //clean buffer
       getchar();
       break;
@@ -215,12 +162,9 @@ void *listen_to_messages_thread(void *data)
 
   while (TRUE)
   {
-    // printf("Waiting for data...");
-
     clear_buffer(buffer_to_receive_messages);
 
-    // TODO: implement a mutex here!
-
+    //try to receive some data, this is a blocking call
     client_message_length = get_message_from_socket(
         &router_config.socket_number,
         buffer_to_receive_messages,
@@ -231,13 +175,6 @@ void *listen_to_messages_thread(void *data)
 
     // TODO: this should use mutex
     save_message(&router_config.socket, buffer_to_receive_messages);
-
-    // send_response_to_client(
-    //     &router_config.socket_number,
-    //     buffer_to_receive_messages,
-    //     &client_message_length,
-    //     &router_config.socket,
-    //     &socket_length);
   }
 
   pthread_exit(NULL);
@@ -269,7 +206,7 @@ void *send_messages_thread(void *data)
 
   while (TRUE)
   {
-    wait_and_lock_thread(&mutex1, &send_messages_cond);
+    wait_and_lock_thread(&send_message_mutex, &send_messages_cond);
 
     puts("Enter a port");
     scanf("%i", &port_to_send_message);
@@ -293,7 +230,7 @@ void *send_messages_thread(void *data)
       die("sendto()");
     }
 
-    lock_and_wake_next_thread(&mutex1, &menu_cond);
+    lock_and_wake_next_thread(&send_message_mutex, &menu_cond);
   }
 
   printf("SEND MESSAGE\n");
@@ -693,4 +630,56 @@ Router create_main_router(int argc, char const *argv[])
     free(ip);
 
   return router_config;
+}
+
+void save_message(struct sockaddr_in *socket_client, char *buffer_string)
+{
+  if (router_messages == NULL)
+  {
+    router_messages = (Router_messages **)malloc(sizeof(Router_messages **));
+    router_messages_size = 0;
+  }
+
+  router_messages_size++;
+
+  router_messages = realloc(router_messages, (router_messages_size) * sizeof(**router_messages));
+
+  router_messages[router_messages_size - 1] = (Router_messages *)malloc(sizeof(Router_messages *));
+
+  char *aux;
+
+  aux = (char *)malloc(strlen(buffer_string) + 1);
+  strcpy(aux, buffer_string);
+
+  router_messages[router_messages_size - 1]->message = aux;
+
+  aux = (char *)malloc(strlen(inet_ntoa(socket_client->sin_addr)) + 1);
+  strcpy(aux, inet_ntoa(socket_client->sin_addr));
+
+  router_messages[router_messages_size - 1]->address_client = aux;
+
+  router_messages[router_messages_size - 1]->port_client = ntohs(socket_client->sin_port);
+}
+
+void print_all_messages()
+{
+  puts("------------------\n");
+
+  if (router_messages == NULL)
+  {
+    printf("THERE'S NO MESSAGES\n");
+    puts("------------------\n");
+  }
+
+  int i = 0;
+  Router_messages *router;
+
+  for (i = 0; i < router_messages_size; i++)
+  {
+    router = router_messages[i];
+    printf("Cliente: %s:%i\n", router->address_client, router->port_client);
+    printf("Message: %s\n", router->message);
+  }
+
+  puts("------------------\n");
 }
