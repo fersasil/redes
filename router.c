@@ -17,6 +17,11 @@
 #define READ_UNREAD_MESSAGES '2'
 #define READ_ALL_MESSAGES '3'
 
+typedef struct
+{
+  int routerId;
+  int routerDistance;
+} Tuple;
 struct
 {
   int id;
@@ -24,6 +29,8 @@ struct
   char *ip_address;
   struct sockaddr_in socket;
   int socket_number;
+  Tuple **links;
+  int links_count;
 } typedef Router;
 
 struct
@@ -81,16 +88,52 @@ Link **link_list;
 int router_list_size, link_list_size;
 
 Router_messages **router_messages = NULL;
-int router_messages_size;
+int router_messages_size, link_list_size;
+
+Link **link_list;
+
+// Tuple **links;
+// int links_count;
+
+void create_distance_vector(Router *router_config)
+{
+
+  router_config->links = (Tuple **)malloc(sizeof(Tuple **));
+  router_config->links_count = 0;
+  Tuple *aux_tuple;
+  // int links_count;
+
+  for (int i = 0; i < link_list_size; i++)
+  {
+    if (link_list[i]->node_start != router_config->id)
+    {
+      continue;
+    }
+
+    aux_tuple = (Tuple *)malloc(sizeof(Tuple));
+    aux_tuple->routerId = link_list[i]->node_destination;
+    aux_tuple->routerDistance = link_list[i]->weight;
+
+    router_config->links[router_config->links_count] = aux_tuple;
+    router_config->links = realloc(router_config->links, ++(router_config->links_count) * sizeof(**router_config->links));
+  }
+}
 
 int main(int argc, char const *argv[])
 {
   // int router_list_size; //, link_list_size;
   router_list = read_router_config(&router_list_size);
-  // Link **link_list = read_link_config(&link_list_size);
+  link_list = read_link_config(&link_list_size);
 
   Router router_config = create_main_router(argc, argv);
 
+  printf("%i %i\n", router_config.links[0]->routerId, router_config.links[0]->routerDistance);
+  printf("%i %i\n", router_config.links[1]->routerId, router_config.links[1]->routerDistance);
+
+  // TODO: Transformar vetor distancia em char (buffer, ou binario)
+  // TODO: Ler vetor distância e parsear ele
+  // TODO: Opção de listagem (no terminal de comandos do roteador) dos vetores distância recebidos dos vizinhos
+  //TODO: Troca, periódica, de vetores distância entre nós (roteadores) vizinhos
 
   pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)&router_config);
   pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
@@ -628,6 +671,8 @@ Router create_main_router(int argc, char const *argv[])
 
   if (ip != NULL)
     free(ip);
+
+  create_distance_vector(&router_config);
 
   return router_config;
 }
