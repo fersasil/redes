@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <assert.h>
 
 #define ROUTER_FILE_CONFIG_NAME "roteador.config"
 #define LINK_FILE_CONFIG_NAME "enlace.config"
@@ -16,7 +17,8 @@
 #define SEND_A_NEW_MESSAGE '1'
 #define READ_UNREAD_MESSAGES '2'
 #define READ_ALL_MESSAGES '3'
-
+#define MESSAGE_NEIGHBORS_TALK 0;
+#define MESSAGE_STANDART 1;
 typedef struct
 {
   int routerId;
@@ -29,8 +31,8 @@ struct
   char *ip_address;
   struct sockaddr_in socket;
   int socket_number;
-  Tuple **links;
-  int links_count;
+  Tuple **neighbors;
+  int neighbors_count;
 } typedef Router;
 
 struct
@@ -47,11 +49,23 @@ struct
   int port_client;
 } typedef Router_messages;
 
+struct
+{
+  char message[BUFFER_LENGTH - 9];
+  int type;
+  int message_size;
+} typedef Message;
+
 void die(char *s)
 {
   perror(s);
   exit(1);
 }
+
+int talk_to_neighbors = FALSE;
+int talk_to_neighbors_count = 0;
+
+char teste[100];
 
 char *read_file(char *filename);
 Router **read_router_config(int *router_list_size);
@@ -78,10 +92,10 @@ Router create_main_router(int argc, char const *argv[]);
 int parse_args(int argc, char const *argv[], char **ip, int *port);
 int end_all_threads = FALSE;
 
-pthread_mutex_t send_message_mutex = PTHREAD_MUTEX_INITIALIZER, menu_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t send_message_mutex = PTHREAD_MUTEX_INITIALIZER, menu_mutex = PTHREAD_MUTEX_INITIALIZER, update_neighbors_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t router_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface;
-pthread_cond_t send_messages_cond, menu_cond;
+pthread_t Thread_listen_to_messages, Thread_send_messages, Thread_menu_interface, Thread_update_neighbors;
+pthread_cond_t send_messages_cond, menu_cond, update_neighbors_cond;
 
 Router **router_list;
 Link **link_list;
@@ -93,15 +107,15 @@ int router_messages_size, link_list_size;
 Link **link_list;
 
 // Tuple **links;
-// int links_count;
+// int neighbors_count;
 
-void create_distance_vector(Router *router_config)
+void create_distance_vector_neighbors(Router *router_config)
 {
 
-  router_config->links = (Tuple **)malloc(sizeof(Tuple **));
-  router_config->links_count = 0;
+  router_config->neighbors = (Tuple **)malloc(sizeof(Tuple **));
+  router_config->neighbors_count = 0;
   Tuple *aux_tuple;
-  // int links_count;
+  // int neighbors_count;
 
   for (int i = 0; i < link_list_size; i++)
   {
@@ -114,9 +128,94 @@ void create_distance_vector(Router *router_config)
     aux_tuple->routerId = link_list[i]->node_destination;
     aux_tuple->routerDistance = link_list[i]->weight;
 
-    router_config->links[router_config->links_count] = aux_tuple;
-    router_config->links = realloc(router_config->links, ++(router_config->links_count) * sizeof(**router_config->links));
+    router_config->neighbors[router_config->neighbors_count] = aux_tuple;
+    router_config->neighbors = realloc(router_config->neighbors, ++(router_config->neighbors_count) * sizeof(**router_config->neighbors));
   }
+}
+
+// void create_distance_vector(Router *router_config)
+// {
+
+//   router_config->neighbors = (Tuple **)malloc(sizeof(Tuple **));
+//   router_config->neighbors_count = 0;
+//   Tuple *aux_tuple;
+//   // int neighbors_count;
+
+//   for (int i = 0; i < link_list_size; i++)
+//   {
+//     if (link_list[i]->node_start != router_config->id)
+//     {
+//       continue;
+//     }
+
+//     aux_tuple = (Tuple *)malloc(sizeof(Tuple));
+//     aux_tuple->routerId = link_list[i]->node_destination;
+//     aux_tuple->routerDistance = link_list[i]->weight;
+
+//     router_config->neighbors[router_config->neighbors_count] = aux_tuple;
+//     router_config->neighbors = realloc(router_config->neighbors, ++(router_config->neighbors_count) * sizeof(**router_config->neighbors));
+//   }
+// }
+
+void *update_neighbors(void *data)
+{
+  Router router_config;
+  router_config = *((Router *)data);
+
+  for (talk_to_neighbors_count = 0; talk_to_neighbors_count <= sizeof(router_config.neighbors) / sizeof(Tuple); talk_to_neighbors_count++)
+  {
+    talk_to_neighbors = TRUE;
+    // printf("ID %i DISTANCE %i\n", router_config.neighbors[i]->routerId, router_config.neighbors[i]->routerDistance);
+    printf("kjfsjd\n");
+    // Wakes the send message thread
+    lock_and_wake_next_thread(&update_neighbors_mutex, &send_messages_cond);
+    // make this thread wait
+    wait_and_lock_thread(&update_neighbors_mutex, &update_neighbors_cond);
+    talk_to_neighbors = FALSE;
+  }
+  // printf("ollalal\n");
+}
+
+void convert_neighbors_to_buffer(Router *router_config, char *buffer)
+{
+  memset(buffer, 0, strlen(buffer));
+
+  int message = MESSAGE_NEIGHBORS_TALK;
+
+  sprintf(buffer, "%i|", message);
+
+  for (int i = 0; i < router_config->neighbors_count; i++)
+  {
+    char aux[20];
+
+    sprintf(aux, "%i-%i-%i|", router_config->id, router_config->neighbors[i]->routerDistance, router_config->neighbors[i]->routerId);
+
+    strcat(buffer, aux);
+  }
+}
+
+Tuple **read_neighbors_buffer(Message *message)
+{
+  // Message *message;
+
+  // memcpy((void *)&message, (void *)buffer, sizeof(message));
+
+  Tuple **link;
+
+  memcpy((void *)&link, (void *)message->message, message->message_size);
+
+  // free(message);
+
+  return link;
+}
+
+Message *read_message_buffer(char *buffer)
+{
+  Message *message;
+
+  memcpy((void *)&message, (void *)buffer, sizeof(buffer));
+
+  return message;
 }
 
 int main(int argc, char const *argv[])
@@ -127,8 +226,32 @@ int main(int argc, char const *argv[])
 
   Router router_config = create_main_router(argc, argv);
 
-  printf("%i %i\n", router_config.links[0]->routerId, router_config.links[0]->routerDistance);
-  printf("%i %i\n", router_config.links[1]->routerId, router_config.links[1]->routerDistance);
+  char message[100];
+  // convert_neighbors_to_buffer(&router_config, message);
+  // return 0;
+
+  // convert_neighbors_to_buffer(&router_config, teste);
+
+  // printf("teste na main: %s\n", teste);
+
+  // Message* m = read_message_buffer(buffer);
+  // exit(0);
+  // printf("%i\n", m->type);
+  // printf("%c\n", buffer);
+
+  // memcpy(buffer, &router_config.neighbors, sizeof(router_config.neighbors));
+  // memcpy((Tuple** )dest, buffer, sizeof(buffer));
+
+  // memcpy(&dest, buffer, sizeof(buffer));
+  // Tuple **foo;
+  // memcpy((void *)&foo, (void *)buffer, sizeof(buffer));
+
+  // Tuple** links = (Tuple** ) &bytePtr;
+
+  // update_neighbors((void *)&router_config);
+
+  // printf("%i\n", foo[0]->routerId);
+  // printf("%i\n", foo[0]->routerId);
 
   // TODO: Transformar vetor distancia em char (buffer, ou binario)
   // TODO: Ler vetor distância e parsear ele
@@ -138,10 +261,12 @@ int main(int argc, char const *argv[])
   pthread_create(&Thread_listen_to_messages, NULL, listen_to_messages_thread, (void *)&router_config);
   pthread_create(&Thread_send_messages, NULL, send_messages_thread, (void *)&router_config);
   pthread_create(&Thread_menu_interface, NULL, menu_interface_thread, NULL);
+  pthread_create(&Thread_update_neighbors, NULL, update_neighbors, (void *)&router_config);
 
   pthread_join(Thread_send_messages, NULL);
   pthread_join(Thread_listen_to_messages, NULL);
   pthread_join(Thread_menu_interface, NULL);
+  pthread_join(Thread_update_neighbors, NULL);
 
   printf("Thread id %ld returned\n", Thread_menu_interface);
 
@@ -192,6 +317,67 @@ void *menu_interface_thread(void *data)
   pthread_exit(NULL);
 }
 
+void parse(char *buffer)
+{
+  char *end, *r, *tok;
+
+  r = end = strdup(buffer);
+  assert(end != NULL);
+
+  int count = 0;
+  int message_size = 0;
+  Link **message = (Link **)malloc(sizeof(Link **));
+
+  while ((tok = strsep(&end, "|")) != NULL)
+  {
+    printf("%s", tok);
+
+    if (count == 0)
+    {
+      int option = atoi(tok);
+      int message = MESSAGE_STANDART;
+
+      if (option == message)
+      {
+        return buffer + strlen(tok);
+      }
+      count++;
+      continue;
+    }
+    
+    Link *link = (Link *)malloc(sizeof(Link));
+    // link->node_destination = 1;
+
+    char *end_tok, *r_tok, *tok_tok;
+
+    
+    r_tok = end_tok = strdup(tok);
+    assert(end_tok != NULL);
+
+    char* senderId = strsep(&end_tok, "-");
+    char* routerDistance = strsep(&end_tok, "-");
+    char* destinationId =  strsep(&end_tok, "-");
+
+    link->node_destination = atoi(destinationId);
+    link->weight = atoi(routerDistance);
+    link->node_start = atoi(senderId);
+
+    free(r_tok);
+
+    message[message_size] = link;
+
+    message = realloc(message, (++message_size) * sizeof(**router_messages));
+    printf("kldjkldsjsd");
+    // break;
+
+    count++;
+  }
+
+  // printf("%i", message[]->node_destination);
+
+  free(r);
+}
+
 void *listen_to_messages_thread(void *data)
 {
   Router router_config;
@@ -214,7 +400,7 @@ void *listen_to_messages_thread(void *data)
         &router_config.socket,
         &socket_length);
 
-    print_data_received_from_client(&router_config.socket, buffer_to_receive_messages);
+    parse(buffer_to_receive_messages);
 
     // TODO: this should use mutex
     save_message(&router_config.socket, buffer_to_receive_messages);
@@ -251,13 +437,39 @@ void *send_messages_thread(void *data)
   {
     wait_and_lock_thread(&send_message_mutex, &send_messages_cond);
 
-    puts("Enter a port");
-    scanf("%i", &port_to_send_message);
-    socket_to_send_message.sin_port = htons(port_to_send_message);
+    if (!talk_to_neighbors)
+    {
+      puts("Enter a port");
+      scanf("%i", &port_to_send_message);
+      socket_to_send_message.sin_port = htons(port_to_send_message);
 
-    printf("Enter a message : ");
+      printf("Enter a message : ");
 
-    scanf("%s", message);
+      scanf("%s", message);
+    }
+    else
+    {
+
+      // socket_to_send_message.sin_port(router_config.);
+      router_config.neighbors[talk_to_neighbors_count]->routerId;
+
+      // TODO: refactor this to use a better data structure
+      int aux_router_list = 0;
+
+      for (aux_router_list = 0; aux_router_list < router_list_size; aux_router_list++)
+      {
+        // TODO: refactor to handle ids that does not exist in the list
+        if (router_list[aux_router_list]->id == router_config.neighbors[talk_to_neighbors_count]->routerId)
+        {
+          break;
+        }
+      }
+
+      // printf("dest id %i port %i\n", router_config.neighbors[talk_to_neighbors_count]->routerId, router_list[aux_router_list]->port);
+
+      socket_to_send_message.sin_port = htons(router_list[aux_router_list]->port);
+      convert_neighbors_to_buffer(&router_config, message);
+    }
 
     message_success = sendto(
         router_config.socket_number,
@@ -273,7 +485,14 @@ void *send_messages_thread(void *data)
       die("sendto()");
     }
 
-    lock_and_wake_next_thread(&send_message_mutex, &menu_cond);
+    if (!talk_to_neighbors)
+    {
+      lock_and_wake_next_thread(&send_message_mutex, &menu_cond);
+    }
+    else
+    {
+      lock_and_wake_next_thread(&send_message_mutex, &update_neighbors_cond);
+    }
   }
 
   printf("SEND MESSAGE\n");
@@ -672,7 +891,8 @@ Router create_main_router(int argc, char const *argv[])
   if (ip != NULL)
     free(ip);
 
-  create_distance_vector(&router_config);
+  // create_distance_vector(&router_config);
+  create_distance_vector_neighbors(&router_config);
 
   return router_config;
 }
